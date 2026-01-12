@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -35,6 +36,16 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password = db.Column(db.String(60), nullable=False)
+    # Relationship to access all plans for a user easily (optional but helpful)
+    plans = db.relationship('RunPlan', backref='author', lazy=True)
+
+class RunPlan(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    # Link this plan to a specific User ID
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    # Store the entire JSON plan as a string
+    plan_data = db.Column(db.Text, nullable=False) 
+    date_created = db.Column(db.DateTime, default=datetime.datetime.utcnow)
 
 # Create tables automatically
 with app.app_context():
@@ -69,7 +80,6 @@ def login():
     user = User.query.filter_by(email=email).first()
 
     if user and bcrypt.check_password_hash(user.password, data.get('password')):
-        # CHANGE THIS LINE: Cast user.id to string
         access_token = create_access_token(identity=str(user.id)) 
         return jsonify({"token": access_token, "email": user.email}), 200
     else:
@@ -81,7 +91,7 @@ def login():
 @jwt_required() # Protect this route! User must be logged in.
 def generate_plan():
     try:
-        current_user_id = get_jwt_identity() # We can use this to save plans to specific users later
+        current_user_id = get_jwt_identity() # Retrieves the user ID from the token
         data = request.json
         prompt = data.get('prompt')
 
@@ -107,13 +117,40 @@ def generate_plan():
 
         text = gemini_data['candidates'][0]['content']['parts'][0]['text']
         clean_json = text.replace("```json", "").replace("```", "").strip()
+        
+        # Verify it's valid JSON
         plan = json.loads(clean_json)
+
+        # --- NEW: Save Plan to Database ---
+        new_plan = RunPlan(
+            user_id=int(current_user_id), # Ensure ID is an integer
+            plan_data=json.dumps(plan)    # Store JSON object as a string
+        )
+        db.session.add(new_plan)
+        db.session.commit()
+        # ----------------------------------
 
         return jsonify(plan)
 
     except Exception as e:
         print(f"Error: {e}")
         return jsonify({"error": str(e)}), 500
+
+# Optional: Route to retrieve user's history
+@app.route('/my-plans', methods=['GET'])
+@jwt_required()
+def get_my_plans():
+    current_user_id = get_jwt_identity()
+    plans = RunPlan.query.filter_by(user_id=current_user_id).order_by(RunPlan.date_created.desc()).all()
+    
+    output = []
+    for p in plans:
+        output.append({
+            "id": p.id,
+            "date": p.date_created.strftime("%Y-%m-%d %H:%M"),
+            "plan": json.loads(p.plan_data)
+        })
+    return jsonify(output)
 
 if __name__ == '__main__':
     print("Starting Python Logic Server on http://127.0.0.1:5000")
