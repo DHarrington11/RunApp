@@ -3,33 +3,84 @@ import json
 import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-# Import the new library
 from dotenv import load_dotenv
+from flask_sqlalchemy import SQLAlchemy
+from flask_bcrypt import Bcrypt
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# Configuration
 app = Flask(__name__)
-# CORS allows your browser-based React app to talk to this local Python script
-CORS(app) 
+CORS(app)
 
-# You can set your key here or in your environment variables
-# Fetch the key securely
-API_KEY = os.getenv("GEMINI_API_KEY") 
-# Check if key exists
-if not API_KEY:
-    print("WARNING: GEMINI_API_KEY not found in environment variables.")
+# --- CONFIGURATION ---
+# Database (Creates a local file named 'site.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///site.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Secret key for signing cookies/tokens (In production, move this to .env)
+app.config['JWT_SECRET_KEY'] = os.getenv("JWT_SECRET_KEY", "super-secret-dev-key")
+
+API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL_NAME = "gemini-2.5-flash-preview-09-2025"
 API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
 
+# --- INIT EXTENSIONS ---
+db = SQLAlchemy(app)
+bcrypt = Bcrypt(app)
+jwt = JWTManager(app)
+
+# --- DATABASE MODELS ---
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password = db.Column(db.String(60), nullable=False)
+
+# Create tables automatically
+with app.app_context():
+    db.create_all()
+
+# --- AUTH ROUTES ---
+
+@app.route('/register', methods=['POST'])
+def register():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+
+    if User.query.filter_by(email=email).first():
+        return jsonify({"error": "Email already exists"}), 400
+
+    # Hash the password so we don't store it in plain text
+    hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
+    user = User(email=email, password=hashed_password)
+    db.session.add(user)
+    db.session.commit()
+
+    return jsonify({"message": "User created successfully"}), 201
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.json
+    email = data.get('email')
+    password = data.get('password')
+
+    user = User.query.filter_by(email=email).first()
+
+    if user and bcrypt.check_password_hash(user.password, password):
+        # Create a token that proves the user is logged in
+        access_token = create_access_token(identity=user.id)
+        return jsonify({"token": access_token, "email": user.email}), 200
+    else:
+        return jsonify({"error": "Invalid email or password"}), 401
+
+# --- CORE APP ROUTES ---
+
 @app.route('/generate-plan', methods=['POST'])
+@jwt_required() # Protect this route! User must be logged in.
 def generate_plan():
-    """
-    Receives user data from React, calls Gemini via Python, 
-    and returns the structured plan.
-    """
     try:
+        current_user_id = get_jwt_identity() # We can use this to save plans to specific users later
         data = request.json
         prompt = data.get('prompt')
 
@@ -37,17 +88,13 @@ def generate_plan():
             return jsonify({"error": "No prompt provided"}), 400
 
         if not API_KEY:
-            return jsonify({"error": "Server missing API Key. Please set GEMINI_API_KEY env var."}), 500
+            return jsonify({"error": "Server missing API Key"}), 500
 
-        # Construct the request payload for Gemini
         payload = {
             "contents": [{ "parts": [{ "text": prompt }] }],
-            "generationConfig": {
-                "responseMimeType": "application/json"
-            }
+            "generationConfig": { "responseMimeType": "application/json" }
         }
 
-        # Make the request to Google's API using Python's requests library
         response = requests.post(
             f"{API_URL}?key={API_KEY}",
             headers={'Content-Type': 'application/json'},
@@ -57,23 +104,14 @@ def generate_plan():
         response.raise_for_status()
         gemini_data = response.json()
 
-        # Parse the text response into a dictionary
-        generated_text = gemini_data['candidates'][0]['content']['parts'][0]['text']
-        
-        # Clean potential markdown formatting
-        clean_json = generated_text.replace("```json", "").replace("```", "").strip()
+        text = gemini_data['candidates'][0]['content']['parts'][0]['text']
+        clean_json = text.replace("```json", "").replace("```", "").strip()
         plan = json.loads(clean_json)
 
         return jsonify(plan)
 
-    except requests.exceptions.RequestException as e:
-        print(f"API Request Error: {e}")
-        return jsonify({"error": str(e)}), 500
-    except json.JSONDecodeError as e:
-        print(f"JSON Parsing Error: {e}")
-        return jsonify({"error": "Failed to parse AI response"}), 500
     except Exception as e:
-        print(f"Server Error: {e}")
+        print(f"Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
