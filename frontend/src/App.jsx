@@ -217,7 +217,26 @@ const RunCoach = ({ token, userEmail, onLogout }) => {
       INSTRUCTIONS:
       1. Calculate training paces.
       2. Structure exactly a ${formData.planDuration} week plan.
-      3. OUTPUT JSON ONLY. Structure: { "programName": "", "description": "", "weeks": [...] }
+      3. OUTPUT JSON ONLY. 
+      
+      REQUIRED JSON STRUCTURE:
+      { 
+        "programName": "Plan Name", 
+        "description": "Plan Overview", 
+        "weeks": [
+          {
+            "weekNumber": 1,
+            "focus": "Week Focus (e.g., Base Building)",
+            "days": [
+              {
+                "day": "Monday",
+                "type": "Run Type (e.g., Easy Run, Interval, Rest)",
+                "details": "Specific workout details (e.g., 5km @ 5:30/km)"
+              }
+            ]
+          }
+        ]
+      }
     `;
 
     try {

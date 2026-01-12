@@ -53,11 +53,12 @@ def register():
 
     # Hash the password so we don't store it in plain text
     hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
-    user = User(email=email, password=hashed_password)
-    db.session.add(user)
+    new_user = User(email=email, password=hashed_password)
+    db.session.add(new_user)
     db.session.commit()
 
-    return jsonify({"message": "User created successfully"}), 201
+    access_token = create_access_token(identity=str(new_user.id))
+    return jsonify({"token": access_token, "email": new_user.email}), 201
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -67,9 +68,9 @@ def login():
 
     user = User.query.filter_by(email=email).first()
 
-    if user and bcrypt.check_password_hash(user.password, password):
-        # Create a token that proves the user is logged in
-        access_token = create_access_token(identity=user.id)
+    if user and bcrypt.check_password_hash(user.password, data.get('password')):
+        # CHANGE THIS LINE: Cast user.id to string
+        access_token = create_access_token(identity=str(user.id)) 
         return jsonify({"token": access_token, "email": user.email}), 200
     else:
         return jsonify({"error": "Invalid email or password"}), 401
